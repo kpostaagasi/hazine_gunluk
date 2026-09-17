@@ -1,0 +1,9 @@
+matplotlib==3.11.2
+numpy==2.5.3
+openpyxl==3.1.5
+pandas==3.0.5
+pillow==12.3.0
+pypdfium2==5.13.0
+reportlab==5.0.1
+requests==2.34.2
+xlrd==2.0.2

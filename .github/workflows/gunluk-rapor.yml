@@ -1,0 +1,88 @@
+name: Günlük rapor (onay maili)
+
+on:
+  schedule:
+    - cron: "30 5 * * 1-5"   # 08:30 İstanbul (UTC+3), hafta içi
+  workflow_dispatch:
+    inputs:
+      tarih:
+        description: "Rapor tarihi GG.AA.YYYY (boş: bugünden önceki son bülten günü)"
+        required: false
+      onay_maili:
+        description: "Onay mailini gönder"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: gunluk-rapor
+  cancel-in-progress: false
+
+jobs:
+  rapor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TZ: Europe/Istanbul
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Raporu üret
+        run: |
+          if [ -n "${{ inputs.tarih }}" ]; then
+            python hazine_rapor.py --excel --date "${{ inputs.tarih }}"
+          else
+            python hazine_rapor.py --excel
+          fi
+          echo "ISO=$(jq -r .rapor_tarihi_iso output/result.json)" >> "$GITHUB_ENV"
+          echo "TARIH=$(jq -r .rapor_tarihi output/result.json)" >> "$GITHUB_ENV"
+
+      - name: Bu tarih daha önce işlendi mi?
+        id: tekrar
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=rapor-${ISO}" --jq '[.artifacts[] | select(.expired == false)] | length')
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$n" -gt 0 ]; then
+            echo "atla=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${TARIH} raporu daha önce üretilmiş (tatil sonrası aynı bülten); mail atlanıyor."
+          else
+            echo "atla=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Artifact olarak sakla
+        if: steps.tekrar.outputs.atla != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapor-${{ env.ISO }}
+          retention-days: 30
+          path: |
+            output/*.pdf
+            output/*.xlsx
+            output/mail.html
+            output/mail.txt
+            output/result.json
+            output/_work_*/page*.png
+
+      - name: Onay maili gönder
+        if: steps.tekrar.outputs.atla != 'true' && (github.event_name == 'schedule' || inputs.onay_maili)
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          APPROVE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/ekibe-gonder.yml
+        run: |
+          if [ -z "$GMAIL_USER" ] || [ -z "$GMAIL_APP_PASSWORD" ]; then
+            echo "::warning::GMAIL_USER / GMAIL_APP_PASSWORD secret'ları tanımlı değil; mail gönderilmedi."
+            exit 0
+          fi
+          python send_mail.py --mode onay --to "${{ vars.ONAY_ALICI }}"

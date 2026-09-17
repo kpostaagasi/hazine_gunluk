@@ -1,0 +1,56 @@
+name: Ekibe gönder (onaydan sonra)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tarih:
+        description: "Onaylanan rapor tarihi GG.AA.YYYY (onay mailindeki tarih)"
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  gonder:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Onaylanan raporun artifact'ını bul
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ISO=$(python -c "import sys,datetime as d; print(d.datetime.strptime(sys.argv[1].strip(), '%d.%m.%Y').strftime('%Y%m%d'))" "${{ inputs.tarih }}")
+          RUN_ID=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=rapor-${ISO}" \
+            --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .workflow_run.id // empty')
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::rapor-${ISO} bulunamadı. Önce 'Günlük rapor' workflow'u bu tarih için çalışmış olmalı."
+            exit 1
+          fi
+          echo "ISO=$ISO" >> "$GITHUB_ENV"
+          echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: rapor-${{ env.ISO }}
+          path: output
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Ekibe gönder
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          if [ -z "${{ vars.EKIP_ALICILAR }}" ]; then
+            echo "::error::EKIP_ALICILAR repo değişkeni tanımlı değil."
+            exit 1
+          fi
+          python send_mail.py --mode ekip --to "${{ vars.EKIP_ALICILAR }}"
+          echo "::notice::${{ inputs.tarih }} raporu ekibe gönderildi."
