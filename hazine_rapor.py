@@ -44,6 +44,9 @@ MARKETS = {"BAP KES NORMAL EMIRLER PZ (OPSN)", "BAP KES KUCUK EMIRLER PZR (OPSS)
 TLREF_GT = "TLREF e  Endeksli / Indexed to TLREF"
 HAZINE = "Hazine / Turkish Treasury"
 SABIT, ISKONTO = "Sabit / Fixed", "İskontolu / Discounted"
+TLREFK_GT = "TLREFK e  Endeksli / Indexed to TLREFK"
+TUFE_GT = "TÜFE'ye endeksli / Indexed to CPI"
+KIRA_MK = "Kamu Kira Sert. / Public Lease Cert."
 DT_MK, HB_MK = "Devlet Tahvili / Government Bond", "Hazine Bonosu/Treasury Bill"
 
 FONT_DIR = Path(matplotlib.get_data_path()) / "fonts" / "ttf"
@@ -206,7 +209,13 @@ def aggregate(report_date, lst):
     fx = allb[allb["ParaBirimi"] != "TRY"].reset_index(drop=True)
     b, excluded = exclude_outliers(b)
     fx, fx_excluded = exclude_outliers(fx)
-    return tlref, b, fx, excluded + fx_excluded
+    # TLREFK'e endeksli kamu kira sertifikaları: BİST bileşik getiri yayımlamaz → fiyat bazlı
+    tlrefk = a[(a["Ihracci"] == HAZINE) & (a["GetiriTuru"] == TLREFK_GT) & (a["MKTuru"] == KIRA_MK)
+               & (a["ParaBirimi"] == "TRY")].sort_values("Vade").reset_index(drop=True)
+    # TÜFE'ye endeksli devlet tahvilleri: getirisi reel getiridir, nominal eğriyle karşılaştırılmaz
+    tufe = a[(a["Ihracci"] == HAZINE) & (a["GetiriTuru"] == TUFE_GT) & (a["MKTuru"] == DT_MK)
+             & (a["ParaBirimi"] == "TRY")].sort_values("Vade").reset_index(drop=True)
+    return dict(tlref=tlref, tlrefk=tlrefk, b=b, fx=fx, tufe=tufe), excluded + fx_excluded
 
 
 def exclude_outliers(b):
@@ -288,14 +297,18 @@ def place_labels(ax, xs, ys, labels, polylines, fontsize, radii=(14, 24, 36, 50,
             ax.plot(lx, ly, color="#9A9A9A", lw=0.5, zorder=4)
 
 
-def _date_axis(ax):
+def _date_axis(ax, span_days=None):
+    # dar vade aralığında aylık etiketler tekrar etmesin
+    if span_days is not None and span_days < 900:
+        step = max(1, int(round(span_days / 30 / 6)))
+        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=step))
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%m.%Y"))
     ax.grid(True, color="#E6E6E6", lw=0.6)
     for s in ("top", "right"):
         ax.spines[s].set_visible(False)
 
 
-def chart_tlref(t, report_date, path):
+def chart_tlref(t, report_date, path, title=None):
     t = t.dropna(subset=["AgOrt"])
     fig, ax = plt.subplots(figsize=(11, 3.6), dpi=160)
     p = t.dropna(subset=["OncAgOrt"])
@@ -306,9 +319,9 @@ def chart_tlref(t, report_date, path):
     xs = mdates.date2num(t["Vade"])
     labels = [f"{r.ISIN}\n{tr(r.FiyatDeg, 3, True)}" for r in t.itertuples()]
     ax.set_ylabel("Ağ.Ort. Temiz Fiyat")
-    ax.set_title("TLREF'e endeksli kağıtlar — Ağ.Ort. temiz fiyat (etiket: fiyat değişimi, puan)",
+    ax.set_title(title or "TLREF'e endeksli kağıtlar — Ağ.Ort. temiz fiyat (etiket: fiyat değişimi, puan)",
                  fontsize=9.5, color=DARK, loc="left")
-    _date_axis(ax)
+    _date_axis(ax, (t["Vade"].max() - t["Vade"].min()).days)
     ax.legend(fontsize=7.5, frameon=False, loc="lower right", bbox_to_anchor=(1, 1.0), ncol=2)
     lo, hi = t["AgOrt"].min(), t["AgOrt"].max()
     pad = max((hi - lo) * 0.35, 0.3)
@@ -337,7 +350,7 @@ def chart_b_curve(b, report_date, path, figsize):
     ax.set_ylabel("Kapanış bileşik getiri (%)")
     ax.set_title("Sabit kuponlu + İskontolu — Kapanış bileşik getiri (etiket: değişim, bp)",
                  fontsize=9.5, color=DARK, loc="left")
-    _date_axis(ax)
+    _date_axis(ax, (b["Vade"].max() - b["Vade"].min()).days)
     ax.legend(fontsize=7, frameon=False, loc="lower right", bbox_to_anchor=(1, 1.0), ncol=4)
     lo, hi = b["KapGetiri"].min(), b["KapGetiri"].max()
     ax.set_ylim(lo - (hi - lo) * 0.3 - 0.4, hi + (hi - lo) * 0.35 + 0.4)
@@ -499,7 +512,7 @@ def make_table(header, rows, col_w, font=6.6, total=True, pad=1.2):
     return tb
 
 
-def tlref_table(t, s):
+def tlref_table(t, s=None):
     header = ["ISIN", "Vade", "Kalan Gün", "Hacim mn TL", "İşlem", "Önceki Ağ.Ort.", "Ağ.Ort.", "Değişim",
               "Önceki Kapanış", "Kapanış", "Değişim", "Önceki İşlem Günü"]
     rows = [[r.ISIN, dstr(r.Vade), tr(r.KalanGun, 0), tr(r.Hacim / 1e6, 1), r.Islem, tr(r.OncAgOrt, 3),
@@ -507,8 +520,9 @@ def tlref_table(t, s):
              tr(r.Kapanis, 3), colored(r.KapDeg, tr(r.KapDeg, 3, True), True), dstr(r.OncGun)]
             for r in t.itertuples()]
     kd = wavg(t["KapDeg"], t["Hacim"])
-    rows.append(["<b>Toplam</b>", "", "", f"<b>{tr(s['tlref_hacim'] / 1e6, 1)}</b>", f"<b>{s['tlref_islem']}</b>",
-                 "", "", colored(s["tlref_fiyat_deg"], f"<b>{tr(s['tlref_fiyat_deg'], 3, True)}*</b>", True),
+    fd = wavg(t["FiyatDeg"], t["Hacim"])
+    rows.append(["<b>Toplam</b>", "", "", f"<b>{tr(t['Hacim'].sum() / 1e6, 1)}</b>",
+                 f"<b>{int(t['Islem'].sum())}</b>", "", "", colored(fd, f"<b>{tr(fd, 3, True)}*</b>", True),
                  "", "", colored(kd, f"<b>{tr(kd, 3, True)}*</b>", True), ""])
     w = [66, 52, 40, 52, 34, 56, 52, 50, 56, 52, 50, 62]
     return make_table(header, rows, [x * 1.1 for x in w])
@@ -564,7 +578,24 @@ def fx_table(f, font):
     return make_table(header, rows, [x * 1.05 for x in w], font=font, pad=2.2 if font >= 7.4 else 1.2)
 
 
-def build_pdf(report_date, t, b, fx, excluded, s, hl, list_name, list_note, pdf_path, tmp):
+def tufe_table(u, font):
+    header = ["ISIN", "Vade", "Kalan Gün", "Hacim mn TL", "İşlem", "Ağ.Ort. Fiyat", "Fiyat Değ.",
+              "Önceki Kap. Reel Getiri", "Kapanış Reel Getiri", "Kap. Getiri Değ. bp", "Önceki İşlem Günü"]
+    rows = [[r.ISIN, dstr(r.Vade), tr(r.KalanGun, 0), tr(r.Hacim / 1e6, 1), r.Islem, tr(r.AgOrt, 3),
+             colored(r.FiyatDeg, tr(r.FiyatDeg, 3, True), True), tr(r.OncKapGetiri), tr(r.KapGetiri),
+             colored(r.KapGetiriDegBp, tr(r.KapGetiriDegBp, 1, True), False), dstr(r.OncGun)]
+            for r in u.itertuples()]
+    if len(u) > 1:
+        bp = wavg(u["KapGetiriDegBp"], u["Hacim"])
+        rows.append(["<b>Toplam</b>", "", "", f"<b>{tr(u['Hacim'].sum() / 1e6, 1)}</b>",
+                     f"<b>{int(u['Islem'].sum())}</b>", "", "", "", "",
+                     colored(bp, f"<b>{tr(bp, 1, True)}*</b>", False), ""])
+    w = [64, 50, 40, 50, 32, 52, 48, 60, 56, 54, 58]
+    return make_table(header, rows, [x * 1.05 for x in w], font=font, total=len(u) > 1,
+                      pad=2.2 if font >= 7.4 else 1.2)
+
+
+def build_pdf(report_date, grp, excluded, s, hl, list_name, list_note, pdf_path, tmp):
     src = (f"Kaynak: Borsa İstanbul BAP günlük bültenleri (OPSN+OPSS kesin alım satım), Borçlanma Araçları "
            f"Listesi ({list_name}); BV Portföy hesaplamaları.")
     doc = SimpleDocTemplate(str(pdf_path), pagesize=PAGE, leftMargin=14 * mm, rightMargin=14 * mm,
@@ -589,6 +620,10 @@ def build_pdf(report_date, t, b, fx, excluded, s, hl, list_name, list_note, pdf_
         "kuponlu devlet tahvilleri ve iskontolu bono/tahviller (kira sertifikaları hariç). Kategori B yalnızca TL "
         "cinsi kağıtları kapsar; döviz cinsi Hazine tahvilleri getiri seviyeleri karşılaştırılabilir olmadığı "
         "için ayrı tabloda verilir, grafiklere ve toplamlara girmez.",
+        "Kategori C: TLREFK'e endeksli kamu kira sertifikaları (Hazine, TL). TÜFE'ye endeksli devlet tahvilleri "
+        "reel getirileriyle ayrı tabloda verilir. Kapsam dışı: özel sektör kağıtları, TLREF/TLREFK'e dayalı "
+        "değişken faizli kağıtlar, sabit kuponlu kira sertifikaları, altına dayalı kira sertifikaları ve geçmiş "
+        "ihalelere endeksli tahviller.",
         "Değişimler BİST'in yüzde değişim kolonları yerine, aynı işlem kodunun önceki işlem günü bülten "
         "satırından hesaplandı: Ağ.Ort. fiyat işlem hacmi ağırlıklı; kapanış son valörlü koddan. Fiyat "
         "değişimi puan, getiri değişimi baz puan (bp). Toplam satırlarında * hacim ağırlıklı ortalamadır.",
@@ -599,8 +634,9 @@ def build_pdf(report_date, t, b, fx, excluded, s, hl, list_name, list_note, pdf_
     story += [Paragraph("Kapsam ve yöntem", ST["h2"])] + [Paragraph("• " + m, ST["small"]) for m in method]
     story.append(PageBreak())
 
+    t, b, fx = grp["tlref"], grp["b"], grp["fx"]
     # Sayfa 2: TLREF tablo + G1
-    tt = tlref_table(t, s)
+    tt = tlref_table(t)
     _, th = tt.wrap(avail_w, avail_h)
     g1 = tmp / "g1.png"
     chart_tlref(t, report_date, g1)
@@ -609,10 +645,25 @@ def build_pdf(report_date, t, b, fx, excluded, s, hl, list_name, list_note, pdf_
     story += [head, tt, Spacer(1, 6), fit_image(g1, avail_w, max(rem, 120))]
     story.append(PageBreak())
 
+    # Sayfa 3: TLREFK'e endeksli kamu kira sertifikaları (varsa) — fiyat bazlı
+    k = grp["tlrefk"]
+    if len(k):
+        kt = tlref_table(k)
+        _, kh = kt.wrap(avail_w, avail_h)
+        g4 = tmp / "g4.png"
+        chart_tlref(k, report_date, g4,
+                    title="TLREFK'e endeksli kamu kira sertifikaları — Ağ.Ort. temiz fiyat "
+                          "(etiket: fiyat değişimi, puan)")
+        story += [Paragraph("Kategori C — TLREFK'e endeksli kamu kira sertifikaları (BİST bileşik getiri "
+                            "yayımlamaz; değişim temiz fiyat bazında)", ST["h2"]), kt, Spacer(1, 6),
+                  fit_image(g4, avail_w, max(avail_h - kh - 30, 120)), PageBreak()]
+
     # Sayfa 3: Kategori B tablosu (+ varsa döviz cinsi kağıtlar tablosu), tek sayfaya sığacak font
     head_b = Paragraph("Kategori B — Sabit kuponlu ve İskontolu Hazine kağıtları, TL cinsi (vadeye göre)", ST["h2"])
     head_f = Paragraph("Döviz cinsi Hazine tahvilleri — bilgi amaçlı; TL eğrisine ve toplamlara dahil değildir",
                        ST["h2"])
+    head_u = Paragraph("TÜFE'ye endeksli devlet tahvilleri — getiriler reel getiridir; nominal eğriye ve "
+                       "toplamlara dahil değildir", ST["h2"])
     for font in (8.0, 7.4, 6.8, 6.2, 5.6, 5.0):
         bt = b_table(b, s, font)
         parts, h = [head_b, bt], bt.wrap(avail_w, avail_h)[1] + 24
@@ -620,6 +671,10 @@ def build_pdf(report_date, t, b, fx, excluded, s, hl, list_name, list_note, pdf_
             ft = fx_table(fx, min(font, 7.4))
             parts += [Spacer(1, 8), head_f, ft]
             h += ft.wrap(avail_w, avail_h)[1] + 32
+        if len(grp["tufe"]):
+            ut = tufe_table(grp["tufe"], min(font, 7.4))
+            parts += [Spacer(1, 8), head_u, ut]
+            h += ut.wrap(avail_w, avail_h)[1] + 32
         if h <= avail_h:
             break
     story += parts + [PageBreak()]
@@ -644,7 +699,7 @@ def fit_image(path, max_w, max_h):
 
 
 # ----------------------------------------------------------------------------- Excel
-def write_excel(t, b, fx, path):
+def write_excel(grp, path):
     tc = {"ISIN": "ISIN", "Vade": "Vade", "KalanGun": "Kalan Gün", "Hacim": "Hacim TL", "Islem": "İşlem",
           "OncAgOrt": "Önceki Ağ.Ort.", "AgOrt": "Ağ.Ort.", "FiyatDeg": "Ağ.Ort. Değişim (puan)",
           "OncKapanis": "Önceki Kapanış", "Kapanis": "Kapanış", "KapDeg": "Kapanış Değişim (puan)",
@@ -655,18 +710,25 @@ def write_excel(t, b, fx, path):
           "KapGetiriDegBp": "Kap. Getiri Değ. bp", "AgOrtGetiri": "Ağ.Ort. Getiri",
           "AgOrtGetiriDegBp": "Ağ.Ort. Getiri Değ. bp", "OncGun": "Önceki İşlem Günü"}
     with pd.ExcelWriter(path) as xw:
+        t, b, fx = grp["tlref"], grp["b"], grp["fx"]
         t[list(tc)].rename(columns=tc).to_excel(xw, sheet_name="TLREF", index=False)
+        if len(grp["tlrefk"]):
+            grp["tlrefk"][list(tc)].rename(columns=tc).to_excel(xw, sheet_name="TLREFK", index=False)
         b[list(bc)].rename(columns=bc).to_excel(xw, sheet_name="Sabit+Iskontolu", index=False)
         if len(fx):
             fc = {**{k: v for k, v in bc.items() if k != "AgOrtGetiri" and k != "AgOrtGetiriDegBp"},
                   "ParaBirimi": "Döviz"}
             fx[list(fc)].rename(columns=fc).to_excel(xw, sheet_name="Doviz", index=False)
+        if len(grp["tufe"]):
+            uc = {k: v for k, v in bc.items() if k not in ("Tur", "AgOrtGetiri", "AgOrtGetiriDegBp")}
+            grp["tufe"][list(uc)].rename(columns=uc).to_excel(xw, sheet_name="TUFE", index=False)
 
 
 # ----------------------------------------------------------------------------- e-posta içeriği
-def mail_summary(t, b, fx, excluded, s):
-    """E-posta için 3-4 cümlelik, tamamen tablolardan türetilmiş özet."""
+def mail_summary(grp, excluded, s):
+    """E-posta için kısa, tamamen tablolardan türetilmiş özet."""
     out = []
+    t, b, fx = grp["tlref"], grp["b"], grp["fx"]
     bb = b.dropna(subset=["KapGetiriDegBp"])
     if len(bb):
         m = bb.loc[bb["KapGetiriDegBp"].abs().idxmax()]
@@ -682,6 +744,15 @@ def mail_summary(t, b, fx, excluded, s):
         out.append(f"TLREF'e endeksli kağıtlarda {tr(s['tlref_hacim'] / 1e6, 0)} mn TL hacimle Ağ.Ort. fiyat hacim "
                    f"ağırlıklı {tr(s['tlref_fiyat_deg'], 3, True)} puan değişti; en likit kağıt {top.ISIN} "
                    f"({tr(top.Hacim / 1e6, 0)} mn TL) {tr(top.FiyatDeg, 3, True)} puan.")
+    k = grp["tlrefk"]
+    if len(k):
+        out.append(f"TLREFK'e endeksli kamu kira sertifikalarında {tr(k['Hacim'].sum() / 1e6, 0)} mn TL hacimle "
+                   f"Ağ.Ort. fiyat hacim ağırlıklı {tr(wavg(k['FiyatDeg'], k['Hacim']), 3, True)} puan değişti "
+                   f"({len(k)} kağıt).")
+    u = grp["tufe"]
+    if len(u):
+        out.append(f"TÜFE'ye endeksli devlet tahvillerinde {tr(u['Hacim'].sum() / 1e6, 0)} mn TL hacim; reel getiri "
+                   f"hacim ağırlıklı {tr(wavg(u['KapGetiriDegBp'], u['Hacim']), 1, True)} bp ({len(u)} kağıt).")
     if len(fx):
         out.append(f"Döviz cinsi Hazine tahvilleri ({len(fx)} kağıt, {tr(fx['Hacim'].sum() / 1e6, 1)} mn TL) "
                    f"TL eğrisine ve toplamlara dahil değil; raporda ayrı tabloda.")
@@ -691,13 +762,13 @@ def mail_summary(t, b, fx, excluded, s):
     return out
 
 
-def mail_content(rd, t, b, fx, excluded, s, list_note):
+def mail_content(rd, grp, excluded, s, list_note):
     kpis = [("TLREF'e endeksli hacim", f"{tr(s['tlref_hacim'] / 1e6, 0)} mn TL", f"{s['tlref_islem']} işlem"),
             ("TLREF hacim ağırlıklı fiyat değişimi", f"{tr(s['tlref_fiyat_deg'], 3, True)} puan", "Ağ.Ort. temiz fiyat"),
             ("Sabit kuponlu + İskontolu hacim", f"{tr(s['b_hacim'] / 1e6, 0)} mn TL", f"{s['b_islem']} işlem"),
             ("Sabit + İskontolu hacim ağırlıklı getiri değişimi", f"{tr(s['b_bp'], 1, True)} bp",
              "Kapanış bileşik getiri")]
-    summ = mail_summary(t, b, fx, excluded, s)
+    summ = mail_summary(grp, excluded, s)
     subject = f"Hazine Günlük Değişim Raporu — {dstr(rd)}"
     cells = "".join(
         f'<td style="width:25%;padding:10px 12px;border:1px solid {RED};border-left:4px solid {RED};'
@@ -735,7 +806,8 @@ def main():
           else last_bulletin_before(dt.date.today()))
 
     lst, list_name, list_note = load_tbliste()
-    t, b, fx, excluded = aggregate(rd, lst)
+    grp, excluded = aggregate(rd, lst)
+    t, b, fx = grp["tlref"], grp["b"], grp["fx"]
     s = summary_numbers(t, b)
     hl = highlights(t, b, s)
 
@@ -743,11 +815,11 @@ def main():
     tmp = OUT / f"_work_{rd:%Y%m%d}"
     tmp.mkdir(exist_ok=True)
     pdf = OUT / f"Hazine_Gunluk_Degisim_Raporu_{rd:%Y%m%d}.pdf"
-    build_pdf(rd, t, b, fx, excluded, s, hl, list_name, list_note, pdf, tmp)
+    build_pdf(rd, grp, excluded, s, hl, list_name, list_note, pdf, tmp)
     xlsx = None
     if args.excel:
         xlsx = OUT / f"Hazine_Gunluk_Degisim_Raporu_{rd:%Y%m%d}.xlsx"
-        write_excel(t, b, fx, xlsx)
+        write_excel(grp, xlsx)
 
     # sayfa görüntüleri (kontrol için)
     import pypdfium2 as pdfium
@@ -757,7 +829,7 @@ def main():
         page.render(scale=1.6).to_pil().save(p)
         pages.append(str(p))
 
-    subject, body_html, body_txt, summ = mail_content(rd, t, b, fx, excluded, s, list_note)
+    subject, body_html, body_txt, summ = mail_content(rd, grp, excluded, s, list_note)
     (OUT / "mail.html").write_text(body_html)
     (OUT / "mail.txt").write_text(body_txt)
 
@@ -765,9 +837,11 @@ def main():
     result = dict(
         rapor_tarihi=dstr(rd), rapor_tarihi_iso=f"{rd:%Y%m%d}", pdf=rel(pdf), excel=rel(xlsx),
         sayfa_goruntuleri=[rel(q) for q in pages],
-        grafikler=[rel(tmp / f"g{i}.png") for i in (1, 2, 3)],
+        grafikler=([rel(tmp / f"g{i}.png") for i in (1, 2, 3)]
+                   + ([rel(tmp / "g4.png")] if len(grp["tlrefk"]) else [])),
         mail_konu=subject, mail_html="output/mail.html", mail_txt="output/mail.txt", mail_ozet=summ,
-        tlref_kagit=len(t), b_kagit=len(b), doviz_kagit=len(fx),
+        tlref_kagit=len(t), b_kagit=len(b), doviz_kagit=len(fx), tlrefk_kagit=len(grp["tlrefk"]),
+        tufe_kagit=len(grp["tufe"]),
         hariç_tutulanlar=[e["ISIN"] for e in excluded], liste=list_name, liste_notu=list_note,
         ozet={k: (round(v, 4) if isinstance(v, float) else v) for k, v in s.items()},
         one_cikanlar=[x.replace("<b>", "").replace("</b>", "") for x in hl],
