@@ -2,7 +2,12 @@ name: Günlük rapor (onay maili)
 
 on:
   schedule:
-    - cron: "30 5 * * 1-5"   # 08:30 İstanbul (UTC+3), hafta içi
+    # GitHub yoğun dakikalarda (:00/:30) zamanlanmış işleri geciktirir veya atlar.
+    # Yoğun olmayan dakikalar + yedek denemeler; ilk çalışan mail atar, sonrakiler
+    # "bu tarih zaten işlendi mi" kontrolüne takılıp atlanır.
+    - cron: "23 5 * * 1-5"   # 08:23 İstanbul (UTC+3)
+    - cron: "47 6 * * 1-5"   # 09:47 yedek
+    - cron: "17 8 * * 1-5"   # 11:17 yedek
   workflow_dispatch:
     inputs:
       tarih:
