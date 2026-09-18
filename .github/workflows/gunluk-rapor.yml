@@ -2,13 +2,19 @@ name: Günlük rapor (onay maili)
 
 on:
   schedule:
-    # GitHub yoğun dakikalarda (:00/:30) zamanlanmış işleri geciktirir veya atlar.
-    # Yoğun olmayan dakikalar + yedek denemeler; ilk çalışan mail atar, sonrakiler
-    # "bu tarih zaten işlendi mi" kontrolüne takılıp atlanır.
-    - cron: "23 5 * * 1-5"   # 08:23 İstanbul (UTC+3)
-    - cron: "47 6 * * 1-5"   # 09:47 yedek
-    - cron: "17 8 * * 1-5"   # 11:17 yedek
-    - cron: "*/5 * * * *"    # GEÇİCİ: zamanlayıcı testi, doğrulandıktan sonra kaldırılacak
+    # GitHub'ın schedule teslimatı bu hesapta saatlerce gecikebiliyor (ölçüm: hedef
+    # saatten 4.5-12 saat sonra). Cron'da düzeltilecek bir şey yok; çare erken
+    # saatten itibaren birden çok kayıt bırakmak. Hangi tetikleme gelirse gelsin
+    # gerçek kararı aşağıdaki "kapi" adımı verir: hedef saatten önceyse ya da bu
+    # bültenin raporu zaten üretildiyse koşu birkaç saniyede atlanır.
+    - cron: "23 5 * * 1-5"    # 08:23 İstanbul (hedef)
+    - cron: "7 6 * * 1-5"
+    - cron: "7 7 * * 1-5"
+    - cron: "7 8 * * 1-5"
+    - cron: "7 9 * * 1-5"
+    - cron: "7 10 * * 1-5"
+    - cron: "7 11 * * 1-5"
+    - cron: "7 12 * * 1-5"
   workflow_dispatch:
     inputs:
       tarih:
@@ -27,47 +33,80 @@ concurrency:
   group: gunluk-rapor
   cancel-in-progress: false
 
+env:
+  TZ: Europe/Istanbul
+  HEDEF_SAAT: "08:20"          # bu saatten önce gelen tetiklemeler atlanır
+
 jobs:
   rapor:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      TZ: Europe/Istanbul
     steps:
       - uses: actions/checkout@v4
 
+      # Ağır adımlardan önce ucuz kapı: saat kontrolü + son bülten günü + tekrar kontrolü
+      - name: Kapı
+        id: kapi
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$(date +%H:%M)" \< "$HEDEF_SAAT" ]; then
+            echo "::notice::$(date +%H:%M) — hedef saatten ($HEDEF_SAAT) önce; atlanıyor."
+            echo "atla=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -n "${{ inputs.tarih }}" ]; then
+            ISO=$(date -d "$(echo "${{ inputs.tarih }}" | awk -F. '{print $3"-"$2"-"$1}')" +%Y%m%d)
+          else                                  # yayımlanmış son bülteni bul
+            ISO=""
+            for i in $(seq 1 10); do
+              d=$(date -d "-$i day" +%Y%m%d)
+              [ "$(date -d "$d" +%u)" -gt 5 ] && continue
+              url="https://www.borsaistanbul.com/data/ttb/${d:0:4}/${d:4:2}/ttb${d}3.zip"
+              if [ "$(curl -s -o /dev/null -w '%{http_code}' -A 'Mozilla/5.0' "$url")" = "200" ]; then
+                ISO=$d; break
+              fi
+            done
+            if [ -z "$ISO" ]; then
+              echo "::error::Son 10 günde yayımlanmış bülten bulunamadı."; exit 1
+            fi
+          fi
+          echo "ISO=$ISO" >> "$GITHUB_ENV"
+          n=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=rapor-${ISO}" --jq '[.artifacts[] | select(.expired == false)] | length')
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$n" -gt 0 ]; then
+            echo "::notice::${ISO} raporu daha önce üretilmiş; atlanıyor."
+            echo "atla=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "atla=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${ISO} raporu üretilecek (tetikleme: ${{ github.event_name }}, saat $(date +%H:%M))."
+          fi
+
       - uses: actions/setup-python@v5
+        if: steps.kapi.outputs.atla != 'true'
         with:
           python-version: "3.12"
           cache: pip
 
       - run: pip install -r requirements.txt
+        if: steps.kapi.outputs.atla != 'true'
 
       - name: Raporu üret
+        if: steps.kapi.outputs.atla != 'true'
         run: |
           if [ -n "${{ inputs.tarih }}" ]; then
             python hazine_rapor.py --excel --date "${{ inputs.tarih }}"
           else
             python hazine_rapor.py --excel
           fi
-          echo "ISO=$(jq -r .rapor_tarihi_iso output/result.json)" >> "$GITHUB_ENV"
           echo "TARIH=$(jq -r .rapor_tarihi output/result.json)" >> "$GITHUB_ENV"
-
-      - name: Bu tarih daha önce işlendi mi?
-        id: tekrar
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          n=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=rapor-${ISO}" --jq '[.artifacts[] | select(.expired == false)] | length')
-          if [ "${{ github.event_name }}" = "schedule" ] && [ "$n" -gt 0 ]; then
-            echo "atla=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::${TARIH} raporu daha önce üretilmiş (tatil sonrası aynı bülten); mail atlanıyor."
-          else
-            echo "atla=false" >> "$GITHUB_OUTPUT"
+          uretilen=$(jq -r .rapor_tarihi_iso output/result.json)
+          if [ "$uretilen" != "$ISO" ]; then      # kapıda bulunan tarih ile üretilen rapor uyuşmalı
+            echo "::warning::Kapıda bulunan bülten ($ISO) ile üretilen rapor ($uretilen) farklı."
+            echo "ISO=$uretilen" >> "$GITHUB_ENV"
           fi
 
       - name: Artifact olarak sakla
-        if: steps.tekrar.outputs.atla != 'true'
+        if: steps.kapi.outputs.atla != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: rapor-${{ env.ISO }}
@@ -81,7 +120,7 @@ jobs:
             output/_work_*/page*.png
 
       - name: Onay maili gönder
-        if: steps.tekrar.outputs.atla != 'true' && (github.event_name == 'schedule' || inputs.onay_maili)
+        if: steps.kapi.outputs.atla != 'true' && (github.event_name == 'schedule' || inputs.onay_maili)
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
