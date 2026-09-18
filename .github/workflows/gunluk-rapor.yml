@@ -8,7 +8,7 @@ on:
     - cron: "23 5 * * 1-5"   # 08:23 İstanbul (UTC+3)
     - cron: "47 6 * * 1-5"   # 09:47 yedek
     - cron: "17 8 * * 1-5"   # 11:17 yedek
-    - cron: "10 9 * * *"     # GEÇİCİ: zamanlayıcı testi (12:10), doğrulandıktan sonra kaldırılacak
+    - cron: "*/5 * * * *"    # GEÇİCİ: zamanlayıcı testi, doğrulandıktan sonra kaldırılacak
   workflow_dispatch:
     inputs:
       tarih:
