@@ -7,7 +7,7 @@ hesaplar ve BV Portföy formatında yatay A4 PDF (+ Excel) üretir.
 
 1. **Günlük rapor (onay maili)** — `.github/workflows/gunluk-rapor.yml`
    Hafta içi 08:30 (İstanbul) çalışır, bugünden önceki son bülten gününün raporunu üretir, dosyaları
-   `rapor-YYYYMMDD` artifact'ı olarak 30 gün saklar ve `ONAY_ALICI` adresine **[ONAY]** mail atar.
+   `rapor-YYYYMMDD` artifact'ı olarak 7 gün saklar ve `ONAY_ALICI` adresine **[ONAY]** mail atar.
    Tatil sonrası aynı bülten tekrar seçilirse mail atlanır. Elle de çalıştırılabilir (tarih girilerek).
 2. **Ekibe gönder (onaydan sonra)** — `.github/workflows/ekibe-gonder.yml`
    Actions → *Ekibe gönder* → *Run workflow* → tarih (GG.AA.YYYY). Onay mailinde incelenen dosyaların
@@ -21,8 +21,8 @@ Repo → Settings → Secrets and variables → Actions:
 |---|---|---|
 | Secret | `GMAIL_USER` | Gönderen Gmail adresi |
 | Secret | `GMAIL_APP_PASSWORD` | Gmail uygulama şifresi (Google Hesabı → Güvenlik → 2 adımlı doğrulama → Uygulama şifreleri) |
-| Variable | `ONAY_ALICI` | Onay mailinin gideceği adres |
-| Variable | `EKIP_ALICILAR` | Ekip adresleri, virgülle ayrılmış |
+| Secret | `ONAY_ALICI` | Onay mailinin gideceği adres |
+| Secret | `EKIP_ALICILAR` | Ekip adresleri, virgülle ayrılmış |
 
 ## Yerel çalıştırma
 

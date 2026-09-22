@@ -49,14 +49,15 @@ jobs:
         id: kapi
         env:
           GH_TOKEN: ${{ github.token }}
+          TARIH_GIRDI: ${{ inputs.tarih }}
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "schedule" ] && [ "$(date +%H:%M)" \< "$HEDEF_SAAT" ]; then
             echo "::notice::$(date +%H:%M) — hedef saatten ($HEDEF_SAAT) önce; atlanıyor."
             echo "atla=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if [ -n "${{ inputs.tarih }}" ]; then
-            ISO=$(date -d "$(echo "${{ inputs.tarih }}" | awk -F. '{print $3"-"$2"-"$1}')" +%Y%m%d)
+          if [ -n "$TARIH_GIRDI" ]; then
+            ISO=$(date -d "$(echo "$TARIH_GIRDI" | awk -F. '{print $3"-"$2"-"$1}')" +%Y%m%d)
           else                                  # yayımlanmış son bülteni bul
             ISO=""
             for i in $(seq 1 10); do
@@ -92,9 +93,11 @@ jobs:
 
       - name: Raporu üret
         if: steps.kapi.outputs.atla != 'true'
+        env:
+          TARIH_GIRDI: ${{ inputs.tarih }}
         run: |
-          if [ -n "${{ inputs.tarih }}" ]; then
-            python hazine_rapor.py --excel --date "${{ inputs.tarih }}"
+          if [ -n "$TARIH_GIRDI" ]; then
+            python hazine_rapor.py --excel --date "$TARIH_GIRDI"
           else
             python hazine_rapor.py --excel
           fi
@@ -110,7 +113,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rapor-${{ env.ISO }}
-          retention-days: 30
+          retention-days: 7            # public repoda artifact'ları herkes indirebilir
           path: |
             output/*.pdf
             output/*.xlsx
@@ -125,9 +128,10 @@ jobs:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           APPROVE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/ekibe-gonder.yml
+          ONAY_ALICI: ${{ secrets.ONAY_ALICI }}
         run: |
           if [ -z "$GMAIL_USER" ] || [ -z "$GMAIL_APP_PASSWORD" ]; then
             echo "::warning::GMAIL_USER / GMAIL_APP_PASSWORD secret'ları tanımlı değil; mail gönderilmedi."
             exit 0
           fi
-          python send_mail.py --mode onay --to "${{ vars.ONAY_ALICI }}"
+          python send_mail.py --mode onay --to "$ONAY_ALICI"

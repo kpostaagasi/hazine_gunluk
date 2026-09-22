@@ -25,8 +25,9 @@ jobs:
       - name: Onaylanan raporun artifact'ını bul
         env:
           GH_TOKEN: ${{ github.token }}
+          TARIH: ${{ inputs.tarih }}
         run: |
-          ISO=$(python -c "import sys,datetime as d; print(d.datetime.strptime(sys.argv[1].strip(), '%d.%m.%Y').strftime('%Y%m%d'))" "${{ inputs.tarih }}")
+          ISO=$(python -c "import sys,datetime as d; print(d.datetime.strptime(sys.argv[1].strip(), '%d.%m.%Y').strftime('%Y%m%d'))" "$TARIH")
           RUN_ID=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=rapor-${ISO}" \
             --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .workflow_run.id // empty')
           if [ -z "$RUN_ID" ]; then
@@ -47,10 +48,13 @@ jobs:
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EKIP_ALICILAR: ${{ secrets.EKIP_ALICILAR }}
+          TARIH: ${{ inputs.tarih }}
         run: |
-          if [ -z "${{ vars.EKIP_ALICILAR }}" ]; then
-            echo "::error::EKIP_ALICILAR repo değişkeni tanımlı değil."
+          # Alıcılar secret'tan gelir: log'da maskelenir, public repoda görünmez.
+          if [ -z "$EKIP_ALICILAR" ]; then
+            echo "::error::EKIP_ALICILAR secret'ı tanımlı değil."
             exit 1
           fi
-          python send_mail.py --mode ekip --to "${{ vars.EKIP_ALICILAR }}"
-          echo "::notice::${{ inputs.tarih }} raporu ekibe gönderildi."
+          python send_mail.py --mode ekip --to "$EKIP_ALICILAR"
+          echo "::notice::$TARIH raporu ekibe gönderildi."
