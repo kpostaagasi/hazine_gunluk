@@ -1,20 +1,12 @@
 name: Günlük rapor (onay maili)
 
 on:
+  # Asıl tetikleyici cron-job.org: hafta içi 09:00 İstanbul'da bu workflow'u
+  # workflow_dispatch API'siyle başlatır. GitHub'ın schedule teslimatı bu hesapta
+  # 4.5-6 saat gecikiyor; aşağıdaki kayıt yalnızca yedek. Dış tetikleme o gün
+  # raporu ürettiyse "kapi" adımı yedek koşuyu birkaç saniyede atlar.
   schedule:
-    # GitHub'ın schedule teslimatı bu hesapta saatlerce gecikebiliyor (ölçüm: hedef
-    # saatten 4.5-12 saat sonra). Cron'da düzeltilecek bir şey yok; çare erken
-    # saatten itibaren birden çok kayıt bırakmak. Hangi tetikleme gelirse gelsin
-    # gerçek kararı aşağıdaki "kapi" adımı verir: hedef saatten önceyse ya da bu
-    # bültenin raporu zaten üretildiyse koşu birkaç saniyede atlanır.
-    - cron: "23 5 * * 1-5"    # 08:23 İstanbul (hedef)
-    - cron: "7 6 * * 1-5"
-    - cron: "7 7 * * 1-5"
-    - cron: "7 8 * * 1-5"
-    - cron: "7 9 * * 1-5"
-    - cron: "7 10 * * 1-5"
-    - cron: "7 11 * * 1-5"
-    - cron: "7 12 * * 1-5"
+    - cron: "37 6 * * 1-5"    # 09:37 İstanbul (yedek)
   workflow_dispatch:
     inputs:
       tarih:
