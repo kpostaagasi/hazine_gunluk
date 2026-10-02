@@ -39,6 +39,7 @@ BIST = "https://www.borsaistanbul.com"
 RED, DARK = "#C00000", "#8B0000"
 GREEN = "#2E7D32"
 GREY = "#7F7F7F"
+BLUE = "#1F5FBF"
 
 MARKETS = {"BAP KES NORMAL EMIRLER PZ (OPSN)", "BAP KES KUCUK EMIRLER PZR (OPSS)"}
 TLREF_GT = "TLREF e  Endeksli / Indexed to TLREF"
@@ -144,6 +145,18 @@ def last_bulletin_before(today):
     raise FileNotFoundError("Son 10 günde yayımlanmış bülten bulunamadı.")
 
 
+def week_ago(report_date):
+    """report_date - 7 gün (işlem günü değilse en fazla 4 gün geriye) bülteni ve tarihi; yoksa (None, None)."""
+    d = pd.Timestamp(report_date).normalize() - pd.Timedelta(days=7)
+    for _ in range(5):
+        if d.weekday() < 5:
+            df = load_ttb(d)
+            if df is not None:
+                return df, d
+        d -= pd.Timedelta(days=1)
+    return None, None
+
+
 # ----------------------------------------------------------------------------- hesaplama
 def wavg(v, w):
     v, w = np.asarray(v, float), np.asarray(w, float)
@@ -198,6 +211,15 @@ def aggregate(report_date, lst):
     a["KapDeg"] = (a["Kapanis"] - a["OncKapanis"]).round(6)
     a["KapGetiriDegBp"] = ((a["KapGetiri"] - a["OncKapGetiri"]) * 100).round(4)
     a["AgOrtGetiriDegBp"] = ((a["AgOrtGetiri"] - a["OncAgOrtGetiri"]) * 100).round(4)
+    wdf, _ = week_ago(report_date)
+    if wdf is None:
+        a["HaftaAgOrt"] = a["HaftaKapGetiri"] = np.nan
+    else:
+        w = wdf[wdf["PAZAR ISMI"].isin(MARKETS) & (wdf["ISLEM SAYISI"] > 0)].sort_values(["ISIN/KOD", "VALOR1", "ISLEM KODU"])
+        wk = pd.DataFrame({"HaftaAgOrt": w.groupby("ISIN/KOD").apply(
+                               lambda g: wavg(g["AG.ORT. FIYAT/ORAN/SWAP PUANI"], g["ISLEM HACMI"]), include_groups=False),
+                           "HaftaKapGetiri": w.groupby("ISIN/KOD")["KAPANIS BILESIK GETIRI"].last()})
+        a = a.merge(wk, left_on="ISIN", right_index=True, how="left")
 
     tlref = a[a["GetiriTuru"] == TLREF_GT].sort_values("Vade").reset_index(drop=True)
     isB = (a["Ihracci"] == HAZINE) & (
@@ -328,6 +350,9 @@ def chart_tlref(t, report_date, path, title=None, ylabel="Ağ.Ort. Temiz Fiyat",
     fig, ax = plt.subplots(figsize=(11, 3.6), dpi=160)
     p = t.dropna(subset=["OncAgOrt"])
     ax.plot(p["Vade"], p["OncAgOrt"], ls="--", color=GREY, lw=1.2, label="Önceki işlem günü")
+    wk = t.dropna(subset=["HaftaAgOrt"])
+    if len(wk):
+        ax.plot(wk["Vade"], wk["HaftaAgOrt"], ls=":", color=BLUE, lw=1.5, label="1 hafta önce")
     ax.plot(t["Vade"], t["AgOrt"], color=RED, lw=1.6, label=dstr(report_date))
     col = [GREEN if (not np.isnan(v) and v >= 0) else (RED if not np.isnan(v) else GREY) for v in t["FiyatDeg"]]
     ax.scatter(t["Vade"], t["AgOrt"], c=col, s=34, zorder=5, edgecolor="white", lw=0.6)
@@ -337,9 +362,9 @@ def chart_tlref(t, report_date, path, title=None, ylabel="Ağ.Ort. Temiz Fiyat",
     ax.set_title(title or "TLREF'e endeksli kağıtlar — Ağ.Ort. temiz fiyat (etiket: fiyat değişimi, puan)",
                  fontsize=9.5, color=DARK, loc="left")
     _date_axis(ax, (t["Vade"].max() - t["Vade"].min()).days)
-    ax.legend(fontsize=7.5, frameon=False, loc="lower right", bbox_to_anchor=(1, 1.0), ncol=2)
+    ax.legend(fontsize=7.5, frameon=False, loc="lower right", bbox_to_anchor=(1, 1.0), ncol=3)
     # eksen her iki günü de kapsamalı, yoksa önceki gün çizgisi görünmez
-    vals = pd.concat([t["AgOrt"], p["OncAgOrt"]]).dropna()
+    vals = pd.concat([t["AgOrt"], p["OncAgOrt"], wk["HaftaAgOrt"]]).dropna()
     lo, hi = vals.min(), vals.max()
     pad = max((hi - lo) * 0.35, 0.3)
     ax.set_ylim(lo - pad, hi + pad)
@@ -347,7 +372,8 @@ def chart_tlref(t, report_date, path, title=None, ylabel="Ağ.Ort. Temiz Fiyat",
     ax.set_xlim(xs.min() - span * 0.06, xs.max() + span * 0.06)
     fig.tight_layout()
     place_labels(ax, xs, t["AgOrt"].to_numpy(), labels,
-                 [(xs, t["AgOrt"].to_numpy()), (mdates.date2num(p["Vade"]), p["OncAgOrt"].to_numpy())], 6.3)
+                 [(xs, t["AgOrt"].to_numpy()), (mdates.date2num(p["Vade"]), p["OncAgOrt"].to_numpy()),
+                  (mdates.date2num(wk["Vade"]), wk["HaftaAgOrt"].to_numpy())], 6.3)
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
 
@@ -357,6 +383,9 @@ def chart_b_curve(b, report_date, path, figsize):
     fig, ax = plt.subplots(figsize=figsize, dpi=160)
     p = b.dropna(subset=["OncKapGetiri"])
     ax.plot(p["Vade"], p["OncKapGetiri"], ls="--", color=GREY, lw=1.2, label="Önceki işlem günü")
+    wk = b.dropna(subset=["HaftaKapGetiri"])
+    if len(wk):
+        ax.plot(wk["Vade"], wk["HaftaKapGetiri"], ls=":", color=BLUE, lw=1.5, label="1 hafta önce")
     ax.plot(b["Vade"], b["KapGetiri"], color=RED, lw=1.6, label=dstr(report_date))
     for tur, mk in (("Sabit", "o"), ("İskontolu", "s")):
         s = b[b["Tur"] == tur]
@@ -368,15 +397,16 @@ def chart_b_curve(b, report_date, path, figsize):
     ax.set_title("Sabit kuponlu + İskontolu — Kapanış bileşik getiri (etiket: değişim, bp)",
                  fontsize=9.5, color=DARK, loc="left")
     _date_axis(ax, (b["Vade"].max() - b["Vade"].min()).days)
-    ax.legend(fontsize=7, frameon=False, loc="lower right", bbox_to_anchor=(1, 1.0), ncol=4)
-    vals = pd.concat([b["KapGetiri"], p["OncKapGetiri"]]).dropna()
+    ax.legend(fontsize=7, frameon=False, loc="lower right", bbox_to_anchor=(1, 1.0), ncol=5)
+    vals = pd.concat([b["KapGetiri"], p["OncKapGetiri"], wk["HaftaKapGetiri"]]).dropna()
     lo, hi = vals.min(), vals.max()
     ax.set_ylim(lo - (hi - lo) * 0.3 - 0.4, hi + (hi - lo) * 0.35 + 0.4)
     span = xs.max() - xs.min() if len(xs) > 1 else 60
     ax.set_xlim(xs.min() - span * 0.08, xs.max() + span * 0.06)
     fig.tight_layout()
     place_labels(ax, xs, b["KapGetiri"].to_numpy(), labels,
-                 [(xs, b["KapGetiri"].to_numpy()), (mdates.date2num(p["Vade"]), p["OncKapGetiri"].to_numpy())],
+                 [(xs, b["KapGetiri"].to_numpy()), (mdates.date2num(p["Vade"]), p["OncKapGetiri"].to_numpy()),
+                  (mdates.date2num(wk["Vade"]), wk["HaftaKapGetiri"].to_numpy())],
                  6.0, radii=(20, 30, 42, 56, 72, 90, 110, 132), leader_from=0)
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
