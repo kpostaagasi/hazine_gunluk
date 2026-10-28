@@ -130,10 +130,20 @@ def load_tbliste():
     f = files[-1]
     lst = pd.read_excel(f, sheet_name="Borçlanma Araçları", header=0)
     lst.columns = [str(c).split("\n")[0].strip() for c in lst.columns]
-    lst = lst.rename(columns={"ISIN Kodu": "ISIN", "İhraçcı Kurum": "Ihracci", "Getiri Türü": "GetiriTuru",
-                              "MK Türü": "MKTuru", "İtfa Tarihi": "Vade", "Para Birimi": "ParaBirimi"})
-    lst["Vade"] = pd.to_datetime(lst["Vade"], errors="coerce")
-    return lst[["ISIN", "Ihracci", "GetiriTuru", "MKTuru", "Vade", "ParaBirimi"]].drop_duplicates("ISIN"), f.name, note
+    lst = lst.rename(columns={
+        "ISIN Kodu": "ISIN", "İhraçcı Kurum": "Ihracci", "Getiri Türü": "GetiriTuru",
+        "MK Türü": "MKTuru", "İtfa Tarihi": "Vade", "Para Birimi": "ParaBirimi",
+        "İlk İhraç Tarihi": "IlkIhrac", "Yıllık Kupon Sıklığı": "KuponSikligi",
+        "Sonraki Kupon Tarihi": "SonrakiKupon", "Sonraki Kupon Oranı %": "KuponOrani",
+        "Gün Sayım Konvansiyonu": "GunSayim",
+    })
+    for c in ("Vade", "IlkIhrac", "SonrakiKupon"):
+        lst[c] = pd.to_datetime(lst[c], errors="coerce")
+    for c in ("KuponSikligi", "KuponOrani"):
+        lst[c] = pd.to_numeric(lst[c], errors="coerce")
+    cols = ["ISIN", "Ihracci", "GetiriTuru", "MKTuru", "Vade", "ParaBirimi",
+            "IlkIhrac", "KuponSikligi", "SonrakiKupon", "KuponOrani", "GunSayim"]
+    return lst[cols].drop_duplicates("ISIN"), f.name, note
 
 
 def last_bulletin_before(today):
@@ -163,6 +173,73 @@ def wavg(v, w):
     m = ~np.isnan(v) & ~np.isnan(w) & (w > 0)
     return float(np.sum(v[m] * w[m]) / np.sum(w[m])) if m.any() else np.nan
 
+
+def _ay_ekle(t, ay):
+    import calendar
+    y, m = divmod((t.year * 12 + t.month - 1) + ay, 12)
+    m += 1
+    return t.replace(year=y, month=m, day=min(t.day, calendar.monthrange(y, m)[1]))
+
+
+def kupon_tarihleri(itfa, ilk_ihrac, siklik, konv="ACTACT", sonraki=None, valor=None):
+    if not siklik or pd.isna(siklik) or pd.isna(itfa):
+        return [itfa] if pd.notna(itfa) else []
+    siklik = int(siklik)
+    gun_adim = round(364 / siklik) if str(konv).upper().startswith("ACTACT") else None
+    ay_adim = None if gun_adim else max(1, round(12 / siklik))
+    adimla = lambda t, yon=1: t + pd.Timedelta(days=yon * gun_adim) if gun_adim else _ay_ekle(t, yon * ay_adim)  # noqa: E731
+
+    def ileri(bas):
+        out, t = [], bas
+        for _ in range(800):
+            t = adimla(t)
+            if (itfa - t).days <= 10:
+                break
+            out.append(t)
+        return out + [itfa]
+
+    def geri(bit):
+        out, t = [], bit
+        sinir = ilk_ihrac if pd.notna(ilk_ihrac) else (valor - pd.Timedelta(days=900))
+        for _ in range(800):
+            t = adimla(t, -1)
+            if sinir is not None and t <= sinir:
+                break
+            out.append(t)
+        return sorted(out)
+
+    tarihler = ileri(ilk_ihrac) if (pd.notna(ilk_ihrac) and ilk_ihrac < itfa) else (geri(itfa) + [itfa])
+    if sonraki is not None and pd.notna(sonraki) and valor is not None:
+        gelecek = [t for t in tarihler if t > valor]
+        if not gelecek or abs((gelecek[0] - sonraki).days) > 3:
+            tarihler = sorted(set(geri(sonraki) + [sonraki] + ileri(sonraki)))
+    return sorted(set(tarihler))
+
+
+def macaulay_durasyon(r, valor):
+    """Sabit kuponlu ve iskontolu kağıtlar için Macaulay durasyon (yıl)."""
+    vade = r["Vade"]
+    if pd.isna(vade):
+        return np.nan
+    kalan = (vade - valor).days
+    if kalan <= 0:
+        return np.nan
+    siklik, kupon, y = r.get("KuponSikligi"), r.get("KuponOrani"), r.get("KapGetiri")
+    if pd.isna(siklik) or siklik <= 0 or pd.isna(kupon) or kupon <= 0 or r.get("GetiriTuru") == ISKONTO:
+        return kalan / 365.0
+    if pd.isna(y) or (1.0 + y / 100.0) <= 0:
+        return np.nan
+    konv = str(r.get("GunSayim") or "ACT365")
+    taban = 364.0 if konv.upper().startswith("ACTACT") else 365.0
+    tarihler = [t for t in kupon_tarihleri(vade, r.get("IlkIhrac"), siklik, konv, r.get("SonrakiKupon"), valor)
+                if t > valor]
+    if not tarihler:
+        return kalan / 365.0
+    gun = np.array([(t - valor).days for t in tarihler], float)
+    cf = np.full(len(tarihler), float(kupon))
+    cf[-1] += 100.0
+    pv = cf / (1.0 + float(y) / 100.0) ** (gun / taban)
+    return float(np.sum((gun / 365.0) * pv) / np.sum(pv))
 
 def aggregate(report_date, lst):
     today = load_ttb(report_date, required=True)
@@ -229,6 +306,8 @@ def aggregate(report_date, lst):
     allb = a[isB | isKira].copy()
     allb["Tur"] = np.where(allb["GetiriTuru"] == SABIT, "Sabit", "İskontolu")
     allb["MK"] = np.where(allb["MKTuru"] == KIRA_MK, "Kira Sert.", "Tahvil/Bono")
+    valor = pd.Timestamp(report_date)
+    allb["Durasyon"] = [macaulay_durasyon(r, valor) for _, r in allb.iterrows()]
     allb = allb.sort_values("Vade")
     # TL ve döviz cinsi kağıtlar ayrı ele alınır: getiri seviyeleri karşılaştırılabilir değil
     tl = allb[allb["ParaBirimi"] == "TRY"]
@@ -379,34 +458,37 @@ def chart_tlref(t, report_date, path, title=None, ylabel="Ağ.Ort. Temiz Fiyat",
 
 
 def chart_b_curve(b, report_date, path, figsize):
-    b = b.dropna(subset=["KapGetiri"])
+    b = b.dropna(subset=["KapGetiri", "Durasyon"]).sort_values(["Durasyon", "Vade"]).reset_index(drop=True)
     fig, ax = plt.subplots(figsize=figsize, dpi=160)
     p = b.dropna(subset=["OncKapGetiri"])
-    ax.plot(p["Vade"], p["OncKapGetiri"], ls="--", color=GREY, lw=1.2, label="Önceki işlem günü")
+    ax.plot(p["Durasyon"], p["OncKapGetiri"], ls="--", color=GREY, lw=1.2, label="Önceki işlem günü")
     wk = b.dropna(subset=["HaftaKapGetiri"])
     if len(wk):
-        ax.plot(wk["Vade"], wk["HaftaKapGetiri"], ls=":", color=BLUE, lw=1.5, label="1 hafta önce")
-    ax.plot(b["Vade"], b["KapGetiri"], color=RED, lw=1.6, label=dstr(report_date))
+        ax.plot(wk["Durasyon"], wk["HaftaKapGetiri"], ls=":", color=BLUE, lw=1.5, label="1 hafta önce")
+    ax.plot(b["Durasyon"], b["KapGetiri"], color=RED, lw=1.6, label=dstr(report_date))
     for tur, mk in (("Sabit", "o"), ("İskontolu", "s")):
         s = b[b["Tur"] == tur]
-        ax.scatter(s["Vade"], s["KapGetiri"], marker=mk, s=30, color=DARK, zorder=5,
+        ax.scatter(s["Durasyon"], s["KapGetiri"], marker=mk, s=30, color=DARK, zorder=5,
                    edgecolor="white", lw=0.6, label=tur)
-    xs = mdates.date2num(b["Vade"])
+    xs = b["Durasyon"].to_numpy(float)
     labels = [f"{r.ISIN} {tr(r.KapGetiriDegBp, 1, True)}" for r in b.itertuples()]
+    ax.set_xlabel("Macaulay durasyon (yıl)")
     ax.set_ylabel("Kapanış bileşik getiri (%)")
     ax.set_title("Sabit kuponlu + İskontolu — Kapanış bileşik getiri (etiket: değişim, bp)",
                  fontsize=9.5, color=DARK, loc="left")
-    _date_axis(ax, (b["Vade"].max() - b["Vade"].min()).days)
+    ax.grid(True, color="#E6E6E6", lw=0.6)
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
     ax.legend(fontsize=7, frameon=False, loc="lower right", bbox_to_anchor=(1, 1.0), ncol=5)
     vals = pd.concat([b["KapGetiri"], p["OncKapGetiri"], wk["HaftaKapGetiri"]]).dropna()
     lo, hi = vals.min(), vals.max()
     ax.set_ylim(lo - (hi - lo) * 0.3 - 0.4, hi + (hi - lo) * 0.35 + 0.4)
-    span = xs.max() - xs.min() if len(xs) > 1 else 60
+    span = xs.max() - xs.min() if len(xs) > 1 and xs.max() > xs.min() else 1.0
     ax.set_xlim(xs.min() - span * 0.08, xs.max() + span * 0.06)
     fig.tight_layout()
     place_labels(ax, xs, b["KapGetiri"].to_numpy(), labels,
-                 [(xs, b["KapGetiri"].to_numpy()), (mdates.date2num(p["Vade"]), p["OncKapGetiri"].to_numpy()),
-                  (mdates.date2num(wk["Vade"]), wk["HaftaKapGetiri"].to_numpy())],
+                 [(xs, b["KapGetiri"].to_numpy()), (p["Durasyon"].to_numpy(float), p["OncKapGetiri"].to_numpy()),
+                  (wk["Durasyon"].to_numpy(float), wk["HaftaKapGetiri"].to_numpy())],
                  6.0, radii=(20, 30, 42, 56, 72, 90, 110, 132), leader_from=0)
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
