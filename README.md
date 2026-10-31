@@ -6,7 +6,8 @@ hesaplar ve BV Portföy formatında yatay A4 PDF (+ Excel) üretir.
 ## Akış (GitHub Actions)
 
 1. **Günlük rapor (onay maili)** — `.github/workflows/gunluk-rapor.yml`
-   Hafta içi 08:30 (İstanbul) çalışır, bugünden önceki son bülten gününün raporunu üretir, dosyaları
+   Hafta içi 09:00 (İstanbul) cron-job.org üzerinden `workflow_dispatch` ile tetiklenir; 09:37'deki GitHub
+   zamanlaması yedektir. Bugünden önceki son bülten gününün raporunu üretir, dosyaları
    `rapor-YYYYMMDD` artifact'ı olarak 7 gün saklar ve `ONAY_ALICI` adresine **[ONAY]** mail atar.
    Tatil sonrası aynı bülten tekrar seçilirse mail atlanır. Elle de çalıştırılabilir (tarih girilerek).
 2. **Ekibe gönder (onaydan sonra)** — `.github/workflows/ekibe-gonder.yml`
@@ -23,6 +24,8 @@ Repo → Settings → Secrets and variables → Actions:
 | Secret | `GMAIL_APP_PASSWORD` | Gmail uygulama şifresi (Google Hesabı → Güvenlik → 2 adımlı doğrulama → Uygulama şifreleri) |
 | Secret | `ONAY_ALICI` | Onay mailinin gideceği adres |
 | Secret | `EKIP_ALICILAR` | Ekip adresleri, virgülle ayrılmış |
+
+Zamanlama için cron-job.org'da hafta içi 09:00 (İstanbul) `gunluk-rapor.yml` için `workflow_dispatch` çağrısı tanımlayın.
 
 ## Yerel çalıştırma
 
