@@ -65,4 +65,4 @@ Otomatik test yoktur; `hazine_rapor.py` hatasız biter ve PDF üretirse hat çal
 
 ## Lisans
 
-Repoda lisans dosyası yoktur; kod varsayılan olarak tüm hakları saklı kabul edilir.
+Kod [MIT Lisansı](LICENSE) ile dağıtılır. Raporlarda kullanılan Borsa İstanbul bülten verileri bu lisansın kapsamında değildir.
